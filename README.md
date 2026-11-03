@@ -1,1 +1,1 @@
-# mergify-security-test
+Mergify integration test.
