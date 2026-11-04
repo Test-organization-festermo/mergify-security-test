@@ -1,0 +1,59 @@
+name: audit-head-gate
+
+"on":
+  pull_request:
+    branches: [audit/head-state-target]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  audit-head-gate:
+    name: audit-head-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check immutable HEAD and synthetic marker
+        shell: bash
+        env:
+          AUDIT_REPOSITORY: ${{ github.repository }}
+          AUDIT_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          AUDIT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          AUDIT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          AUDIT_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          expected_repository='Test-organization-festermo/mergify-security-test'
+          [[ "$AUDIT_REPOSITORY" == "$expected_repository" ]] || exit 1
+          [[ "$AUDIT_HEAD_REPOSITORY" == "$expected_repository" ]] || exit 1
+          [[ "$AUDIT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$AUDIT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          [[ "$AUDIT_PR_NUMBER" =~ ^[0-9]+$ ]] || exit 1
+          export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+          workdir="$(mktemp -d "$RUNNER_TEMP/audit-head-gate.XXXXXX")"
+          trap 'rm -rf -- "$workdir"' EXIT
+          git init --quiet --template= "$workdir"
+          git -C "$workdir" -c credential.helper= -c core.hooksPath=/dev/null fetch \
+            --quiet --no-tags --depth=1 \
+            https://github.com/Test-organization-festermo/mergify-security-test.git "$AUDIT_HEAD_SHA"
+          git -C "$workdir" -c core.hooksPath=/dev/null checkout --quiet --detach FETCH_HEAD
+          actual_sha="$(git -C "$workdir" rev-parse HEAD)"
+          [[ "$actual_sha" == "$AUDIT_HEAD_SHA" ]] || exit 1
+          printf 'pr=%s\nhead_sha=%s\nbase_sha=%s\ncheckout_sha=%s\ncheckout_tree=%s\n' \
+            "$AUDIT_PR_NUMBER" "$AUDIT_HEAD_SHA" "$AUDIT_BASE_SHA" "$actual_sha" \
+            "$(git -C "$workdir" rev-parse 'HEAD^{tree}')"
+          marker_file="$workdir/audit-head-marker.txt"
+          read -r marker_mode marker_kind marker_object marker_path < <(
+            git -C "$workdir" ls-tree HEAD -- audit-head-marker.txt
+          ) || exit 1
+          [[ "$marker_mode" == 100644 && "$marker_kind" == blob && "$marker_path" == audit-head-marker.txt ]] || exit 1
+          [[ -f "$marker_file" && ! -L "$marker_file" ]] || exit 1
+          [[ "$(wc -c < "$marker_file")" -le 64 ]] || exit 1
+          marker="$(cat -- "$marker_file")"
+          case "$marker" in
+            CONTROL-PASS) printf 'Synthetic control passed\n' ;;
+            PASS-A) sleep 180; printf 'Synthetic A passed on the recorded checkout\n' ;;
+            FAIL-B) printf 'Synthetic B deliberately failed\n'; exit 1 ;;
+            *) printf 'Unknown synthetic marker\n'; exit 1 ;;
+          esac

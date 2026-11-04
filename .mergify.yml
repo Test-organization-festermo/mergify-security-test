@@ -1,0 +1,20 @@
+merge_queue:
+  mode: serial
+  max_parallel_checks: 1
+  skip_intermediate_results: false
+
+merge_protections_settings:
+  auto_merge_conditions: null
+
+queue_rules:
+  - name: audit-head-state
+    batch_size: 1
+    max_checks_retries: 0
+    queue_conditions:
+      - base=audit/head-state-target
+      - "-draft"
+      - check-success=audit-head-gate
+    merge_conditions:
+      - base=audit/head-state-target
+      - "-draft"
+      - check-success=audit-head-gate
